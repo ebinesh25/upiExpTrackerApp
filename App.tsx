@@ -6,6 +6,8 @@
  */
 
 import React, { useState } from 'react';
+import {NavigationContainer} from '@react-navigation/native';
+import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {
   View,
   Text,
@@ -16,7 +18,9 @@ import {
   Alert,
 } from 'react-native';
 
-const App = () => {
+const Tab = createBottomTabNavigator();
+
+const PaymentFormScreen = () => {
   const [toUpi, setToUpi] = useState('');
   const [desc, setDesc] = useState('');
   const [amount, setAmount] = useState('');
@@ -73,6 +77,67 @@ const App = () => {
   );
 };
 
+const ScanScreen = () => {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>QR Code Scanner</Text>
+      <Text style={styles.scanText}>Scan QR code to make payment</Text>
+      <Button 
+        title="Open Camera" 
+        onPress={() => Alert.alert('Info', 'Camera functionality will be implemented here')}
+      />
+    </View>
+  );
+};
+
+const App = () => {
+  return (
+    <NavigationContainer>
+      <Tab.Navigator
+        screenOptions={{
+          headerShown: false,
+          tabBarStyle: {
+            backgroundColor: 'white',
+            borderTopWidth: 1,
+            borderTopColor: '#ccc',
+            paddingVertical: 5,
+          },
+          tabBarLabelStyle: {
+            fontSize: 16,
+            fontWeight: 'bold',
+            marginBottom: 5,
+          },
+          tabBarActiveTintColor: '#ffffff',
+          tabBarInactiveTintColor: '#000000',
+          tabBarActiveBackgroundColor: '#000000',
+          tabBarInactiveBackgroundColor: 'transparent',
+          tabBarItemStyle: {
+            borderWidth: 2,
+            borderColor: '#000000',
+            borderRadius: 5,
+            marginHorizontal: 10,
+          },
+        }}
+      >
+        <Tab.Screen 
+          name="Form" 
+          component={PaymentFormScreen}
+          options={{
+            tabBarLabel: 'Form',
+          }}
+        />
+        <Tab.Screen 
+          name="Scan" 
+          component={ScanScreen}
+          options={{
+            tabBarLabel: 'Scan',
+          }}
+        />
+      </Tab.Navigator>
+    </NavigationContainer>
+  );
+};
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -105,6 +170,12 @@ const styles = StyleSheet.create({
     width: '80%',
     textAlign: 'left',
     fontWeight: '500',
+  },
+  scanText: {
+    fontSize: 18,
+    color: '#ffffff',
+    textAlign: 'center',
+    marginBottom: 30,
   },
 });
 
