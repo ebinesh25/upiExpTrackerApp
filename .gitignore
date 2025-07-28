@@ -1,6 +1,8 @@
 # OSX
 #
 .DS_Store
+.AppleDouble
+.LSOverride
 
 # Xcode
 #
@@ -73,3 +75,38 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Additional entries for React Native development
+# Expo
+.expo/
+web-build/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# VSCode
+.vscode/
+
+# Watchman
+.watchmanconfig
+
+# Debug files
+npm-debug.*
+yarn-debug.*
+
+# React Native CLI cache
+.react-native-cli-cache
+
+# Flipper
+ios/Pods/Flipper*
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Gemfile.lock (Ruby dependencies)
+Gemfile.lock
