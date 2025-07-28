@@ -107,6 +107,9 @@ const App = () => {
             fontWeight: 'bold',
             marginBottom: 5,
           },
+          tabBarIconStyle: {
+            display: 'none',
+          },
           tabBarActiveTintColor: '#ffffff',
           tabBarInactiveTintColor: '#000000',
           tabBarActiveBackgroundColor: '#000000',
