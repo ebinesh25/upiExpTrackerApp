@@ -18,6 +18,8 @@ import {
   Alert,
   TouchableOpacity,
   FlatList,
+  PermissionsAndroid,
+  Platform,
 } from 'react-native';
 import {
   Camera,
@@ -46,6 +48,30 @@ interface Transaction {
 
 // Storage functions
 const STORAGE_KEY = 'upi_transactions';
+
+// Request storage permission for Android
+const requestStoragePermission = async () => {
+  if (Platform.OS !== 'android') {
+    return true;
+  }
+
+  try {
+    const granted = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+      {
+        title: 'Storage Permission',
+        message: 'This app needs access to storage to export files.',
+        buttonNeutral: 'Ask Me Later',
+        buttonNegative: 'Cancel',
+        buttonPositive: 'OK',
+      }
+    );
+    return granted === PermissionsAndroid.RESULTS.GRANTED;
+  } catch (err) {
+    console.warn(err);
+    return false;
+  }
+};
 
 const saveTransaction = async (transaction: Omit<Transaction, 'id' | 'date' | 'time' | 'status'>) => {
   try {
@@ -537,65 +563,281 @@ const TransactionsScreen = () => {
 
   const exportToCSV = async () => {
     try {
+      // Request storage permission
+      const hasPermission = await requestStoragePermission();
+      if (!hasPermission) {
+        Alert.alert('Permission Denied', 'Storage permission is required to export files.');
+        return;
+      }
+
       const filteredTransactions = getFilteredTransactions();
       if (filteredTransactions.length === 0) {
         Alert.alert('No Data', `No ${activeTab} transactions to export.`);
         return;
       }
 
-      // Create CSV content
-      const headers = ['Date', 'Time', 'UPI ID', 'Payee Name', 'Amount (INR)', 'Description', 'Status'];
+      // Create CSV content with proper escaping
+      const headers = ['Date', 'Time', 'UPI ID', 'Payee Name', 'Amount (INR)', 'Description', 'Status', 'Binned Date'];
+      
+      const escapeCSV = (value: string) => {
+        if (value.includes(',') || value.includes('"') || value.includes('\n')) {
+          return `"${value.replace(/"/g, '""')}"`;
+        }
+        return value;
+      };
+
       const csvContent = [
         headers.join(','),
         ...filteredTransactions.map(t =>
           [
-            t.date,
-            t.time,
-            t.toUpi,
-            t.payeeName || 'N/A',
-            t.amount,
-            t.description || 'N/A',
-            t.status,
+            escapeCSV(t.date),
+            escapeCSV(t.time),
+            escapeCSV(t.toUpi),
+            escapeCSV(t.payeeName || 'N/A'),
+            escapeCSV(t.amount),
+            escapeCSV(t.description || 'N/A'),
+            escapeCSV(t.status),
+            escapeCSV(t.binnedDate || 'N/A'),
           ].join(',')
         ),
       ].join('\n');
 
-      // Save to file
-      const path = `${RNFS.DocumentDirectoryPath}/upi_${activeTab}_transactions_${Date.now()}.csv`;
+      // Save to Downloads directory for download
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const fileName = `upi_${activeTab}_transactions_${timestamp}.csv`;
+      
+      // Use Downloads directory for Android, Documents for iOS
+      const downloadsPath = Platform.OS === 'android' 
+        ? RNFS.DownloadDirectoryPath 
+        : RNFS.DocumentDirectoryPath;
+      const path = `${downloadsPath}/${fileName}`;
+      
+      console.log('Saving CSV to:', path);
       await RNFS.writeFile(path, csvContent, 'utf8');
+      
+      // Verify file was created
+      const fileExists = await RNFS.exists(path);
+      if (!fileExists) {
+        throw new Error('File was not created successfully');
+      }
 
-      // Share the file
-      await Share.open({
-        url: `file://${path}`,
-        type: 'text/csv',
-        title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
-      });
+      console.log('File downloaded successfully to:', path);
+      
+      Alert.alert(
+        'Download Complete', 
+        `CSV file downloaded successfully!\n\nLocation: ${Platform.OS === 'android' ? 'Downloads' : 'Files app'}\nFilename: ${fileName}`,
+        [
+          {
+            text: 'Share File',
+            onPress: async () => {
+              try {
+                const fileUri = Platform.OS === 'android' ? `file://${path}` : path;
+                await Share.open({
+                  title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
+                  url: fileUri,
+                  type: 'text/csv',
+                });
+              } catch (shareError) {
+                console.log('Share error:', shareError);
+              }
+            }
+          },
+          { text: 'OK' }
+        ]
+      );
+      
     } catch (error) {
-      console.error('Export error:', error);
-      Alert.alert('Export Failed', 'Could not export transactions.');
+      console.error('Export CSV error:', error);
+      // Fallback to text sharing if file sharing fails
+      try {
+        const filteredTransactions = getFilteredTransactions();
+        const headers = ['Date', 'Time', 'UPI ID', 'Payee Name', 'Amount (INR)', 'Description', 'Status', 'Binned Date'];
+        const csvContent = [
+          headers.join(','),
+          ...filteredTransactions.map(t =>
+            [
+              t.date,
+              t.time,
+              t.toUpi,
+              t.payeeName || 'N/A',
+              t.amount,
+              t.description || 'N/A',
+              t.status,
+              t.binnedDate || 'N/A',
+            ].join(',')
+          ),
+        ].join('\n');
+        
+        await Share.open({
+          title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
+          message: csvContent,
+        });
+        Alert.alert('Shared as Text', 'CSV data shared as text message successfully!');
+      } catch (fallbackError) {
+        Alert.alert('Export Failed', `Could not export transactions: ${error.message}`);
+      }
     }
   };
 
   const exportToJSON = async () => {
     try {
+      // Request storage permission
+      const hasPermission = await requestStoragePermission();
+      if (!hasPermission) {
+        Alert.alert('Permission Denied', 'Storage permission is required to export files.');
+        return;
+      }
+
       const filteredTransactions = getFilteredTransactions();
       if (filteredTransactions.length === 0) {
         Alert.alert('No Data', `No ${activeTab} transactions to export.`);
         return;
       }
 
-      const jsonContent = JSON.stringify(filteredTransactions, null, 2);
-      const path = `${RNFS.DocumentDirectoryPath}/upi_${activeTab}_transactions_${Date.now()}.json`;
+      // Create JSON content with metadata
+      const jsonData = {
+        exportDate: new Date().toISOString(),
+        exportType: activeTab,
+        totalTransactions: filteredTransactions.length,
+        transactions: filteredTransactions
+      };
+
+      const jsonContent = JSON.stringify(jsonData, null, 2);
+      
+      // Save to Downloads directory for download
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const fileName = `upi_${activeTab}_transactions_${timestamp}.json`;
+      
+      // Use Downloads directory for Android, Documents for iOS
+      const downloadsPath = Platform.OS === 'android' 
+        ? RNFS.DownloadDirectoryPath 
+        : RNFS.DocumentDirectoryPath;
+      const path = `${downloadsPath}/${fileName}`;
+      
+      console.log('Saving JSON to:', path);
       await RNFS.writeFile(path, jsonContent, 'utf8');
+      
+      // Verify file was created
+      const fileExists = await RNFS.exists(path);
+      if (!fileExists) {
+        throw new Error('File was not created successfully');
+      }
+
+      console.log('File downloaded successfully to:', path);
+
+      Alert.alert(
+        'Download Complete', 
+        `JSON file downloaded successfully!\n\nLocation: ${Platform.OS === 'android' ? 'Downloads' : 'Files app'}\nFilename: ${fileName}`,
+        [
+          {
+            text: 'Share File',
+            onPress: async () => {
+              try {
+                const fileUri = Platform.OS === 'android' ? `file://${path}` : path;
+                await Share.open({
+                  title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
+                  url: fileUri,
+                  type: 'application/json',
+                });
+              } catch (shareError) {
+                console.log('Share error:', shareError);
+              }
+            }
+          },
+          { text: 'OK' }
+        ]
+      );
+      
+    } catch (error) {
+      console.error('Export JSON error:', error);
+      // Fallback to text sharing if file sharing fails
+      try {
+        const filteredTransactions = getFilteredTransactions();
+        const jsonData = {
+          exportDate: new Date().toISOString(),
+          exportType: activeTab,
+          totalTransactions: filteredTransactions.length,
+          transactions: filteredTransactions
+        };
+        const jsonContent = JSON.stringify(jsonData, null, 2);
+        
+        await Share.open({
+          title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
+          message: jsonContent,
+        });
+        Alert.alert('Shared as Text', 'JSON data shared as text message successfully!');
+      } catch (fallbackError) {
+        Alert.alert('Export Failed', `Could not export transactions: ${error.message}`);
+      }
+    }
+  };
+
+  const shareAsText = async () => {
+    try {
+      const filteredTransactions = getFilteredTransactions();
+      if (filteredTransactions.length === 0) {
+        Alert.alert('No Data', `No ${activeTab} transactions to share.`);
+        return;
+      }
+
+      // Create text content
+      const textContent = `UPI ${activeTab.toUpperCase()} TRANSACTIONS\n` +
+        `Export Date: ${new Date().toLocaleString('en-IN')}\n` +
+        `Total: ${filteredTransactions.length} transactions\n\n` +
+        filteredTransactions.map((t, index) => 
+          `${index + 1}. ${t.date} ${t.time}\n` +
+          `   To: ${t.toUpi}\n` +
+          `   Name: ${t.payeeName || 'N/A'}\n` +
+          `   Amount: ₹${t.amount}\n` +
+          `   Description: ${t.description || 'N/A'}\n` +
+          `   Status: ${t.status.toUpperCase()}\n` +
+          (t.binnedDate ? `   Binned: ${new Date(t.binnedDate).toLocaleString('en-IN')}\n` : '') +
+          '\n'
+        ).join('');
 
       await Share.open({
-        url: `file://${path}`,
-        type: 'application/json',
         title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
+        message: textContent,
       });
+      
     } catch (error) {
-      console.error('Export error:', error);
-      Alert.alert('Export Failed', 'Could not export transactions.');
+      console.error('Share as text error:', error);
+      Alert.alert('Share Failed', `Could not share transactions: ${error.message}`);
+    }
+  };
+
+  const testExport = async () => {
+    try {
+      const filteredTransactions = getFilteredTransactions();
+      
+      // Show debug information
+      Alert.alert(
+        'Export Debug Info',
+        `Document Directory: ${RNFS.DocumentDirectoryPath}\n` +
+        `Active Tab: ${activeTab}\n` +
+        `Transactions: ${filteredTransactions.length}\n` +
+        `RNFS Available: ${RNFS ? 'Yes' : 'No'}\n` +
+        `Share Available: ${Share ? 'Yes' : 'No'}`,
+        [
+          {
+            text: 'Test Simple File',
+            onPress: async () => {
+              try {
+                const testContent = 'Test file content';
+                const path = `${RNFS.DocumentDirectoryPath}/test.txt`;
+                await RNFS.writeFile(path, testContent, 'utf8');
+                const exists = await RNFS.exists(path);
+                Alert.alert('Test Result', `File created: ${exists ? 'Yes' : 'No'}`);
+              } catch (error) {
+                Alert.alert('Test Error', error.message);
+              }
+            }
+          },
+          { text: 'OK' }
+        ]
+      );
+    } catch (error) {
+      Alert.alert('Debug Error', error.message);
     }
   };
 
@@ -754,6 +996,15 @@ const TransactionsScreen = () => {
         </TouchableOpacity>
         <TouchableOpacity style={styles.exportButton} onPress={exportToJSON}>
           <Text style={styles.exportButtonText}>Export JSON</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.buttonRow}>
+        <TouchableOpacity style={styles.exportButton} onPress={shareAsText}>
+          <Text style={styles.exportButtonText}>Share as Text</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.exportButton} onPress={testExport}>
+          <Text style={styles.exportButtonText}>Test Export</Text>
         </TouchableOpacity>
       </View>
 
