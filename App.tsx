@@ -5,7 +5,7 @@
  * @format
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import {
@@ -26,12 +26,90 @@ import {
 
 const Tab = createBottomTabNavigator();
 
-const PaymentFormScreen = () => {
+// Function to parse UPI URL and extract details
+const parseUpiUrl = (upiUrl: string) => {
+  console.log('Raw UPI URL:', upiUrl);
+  
+  try {
+    // Handle different UPI URL formats
+    let url;
+    if (upiUrl.startsWith('upi://pay')) {
+      url = new URL(upiUrl);
+    } else if (upiUrl.includes('upi://pay')) {
+      // Extract the UPI part from a longer URL
+      const upiMatch = upiUrl.match(/upi:\/\/pay[^&\s]*/);
+      if (upiMatch) {
+        url = new URL(upiMatch[0]);
+      } else {
+        throw new Error('Invalid UPI format');
+      }
+    } else {
+      // Handle cases where it might be just the UPI ID or other formats
+      return {
+        pa: upiUrl.includes('@') ? upiUrl : '',
+        pn: '',
+        am: '',
+        cu: 'INR',
+        tn: '',
+      };
+    }
+    
+    const params = new URLSearchParams(url.search);
+    
+    const result = {
+      pa: params.get('pa') || '', // payee address
+      pn: params.get('pn') || '', // payee name
+      am: params.get('am') || '', // amount
+      cu: params.get('cu') || 'INR', // currency
+      tn: params.get('tn') || '', // transaction note/description
+    };
+    
+    console.log('Parsed UPI result:', result);
+    return result;
+    
+  } catch (error) {
+    console.error('Error parsing UPI URL:', error);
+    // Fallback: try to extract UPI ID from the string
+    const upiMatch = upiUrl.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+)/);
+    return {
+      pa: upiMatch ? upiMatch[1] : '',
+      pn: '',
+      am: '',
+      cu: 'INR',
+      tn: '',
+    };
+  }
+};
+
+const PaymentFormScreen = ({ route }: any) => {
+  const scannedData = route?.params?.scannedData;
+  
   const [toUpi, setToUpi] = useState('');
   const [desc, setDesc] = useState('');
   const [amount, setAmount] = useState('');
+  const [payeeName, setPayeeName] = useState('');
+
+  // Update form fields when scanned data changes
+  useEffect(() => {
+    if (scannedData) {
+      const parsedUpi = parseUpiUrl(scannedData);
+      console.log('Scanned Data:', scannedData);
+      console.log('Parsed UPI Data:', parsedUpi);
+      
+      setToUpi(parsedUpi.pa || '');
+      setDesc(parsedUpi.tn || '');
+      setAmount(parsedUpi.am || '');
+      setPayeeName(parsedUpi.pn || '');
+      
+      console.log('Updated state - toUpi:', parsedUpi.pa, 'amount:', parsedUpi.am);
+    }
+  }, [scannedData]);
+
+  // Debug: Log current state values
+  console.log('Current State - toUpi:', toUpi, 'amount:', amount, 'desc:', desc);
 
   const handlePayment = () => {
+    console.log('Initiating payment with UPI ID:', toUpi);
     if (!toUpi || !amount) {
       Alert.alert('Error', 'Please enter UPI ID and amount.');
       return;
@@ -53,6 +131,13 @@ const PaymentFormScreen = () => {
   return (
     <View style={styles.container}>
       <Text style={styles.title}>UPI Payment</Text>
+      
+      {payeeName ? (
+        <View style={styles.payeeInfo}>
+          <Text style={styles.payeeLabel}>Paying to:</Text>
+          <Text style={styles.payeeName}>{payeeName}</Text>
+        </View>
+      ) : null}
 
       <Text style={styles.label}>To UPI ID</Text>
       <TextInput
@@ -60,6 +145,7 @@ const PaymentFormScreen = () => {
         value={toUpi}
         onChangeText={setToUpi}
         style={styles.input}
+        editable={!scannedData} // Make read-only if scanned
       />
 
       <Text style={styles.label}>Description</Text>
@@ -77,13 +163,14 @@ const PaymentFormScreen = () => {
         onChangeText={setAmount}
         keyboardType="numeric"
         style={styles.input}
+        editable={!amount || !scannedData} // Make read-only if amount is already set from scan
       />
-      <Button title="Send" onPress={handlePayment} />
+      <Button title="Pay" onPress={handlePayment} />
     </View>
   );
 };
 
-const ScanScreen = () => {
+const ScanScreen = ({ navigation }: any) => {
   const [showScanner, setShowScanner] = useState(false);
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -91,33 +178,16 @@ const ScanScreen = () => {
   const codeScanner = useCodeScanner({
     codeTypes: ['qr', 'ean-13'],
     onCodeScanned: (codes) => {
+      console.log(`Scanned ${codes.length} codes!`);
+      console.log(`Scanned ${JSON.stringify(codes, null, 2)} codes`);
       if (codes.length > 0) {
         const qrData = codes[0].value;
         setShowScanner(false);
         
         // Check if it's a UPI QR code
         if (qrData && (qrData.includes('upi://pay') || qrData.includes('pa='))) {
-          Alert.alert(
-            'UPI QR Code Detected',
-            'Opening payment app...',
-            [
-              {
-                text: 'Cancel',
-                onPress: () => {},
-                style: 'cancel',
-              },
-              {
-                text: 'Pay',
-                onPress: () => {
-                  Linking.openURL(qrData)
-                    .then(() => {})
-                    .catch(() => {
-                      Alert.alert('Error', 'Could not open payment app');
-                    });
-                },
-              },
-            ]
-          );
+          // Navigate to Form tab with scanned data
+          navigation.navigate('Form', { scannedData: qrData });
         } else {
           Alert.alert(
             'QR Code Scanned',
@@ -335,6 +405,24 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     textAlign: 'center',
     marginBottom: 30,
+  },
+  payeeInfo: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 20,
+    width: '80%',
+    alignItems: 'center',
+  },
+  payeeLabel: {
+    fontSize: 14,
+    color: '#cccccc',
+    marginBottom: 5,
+  },
+  payeeName: {
+    fontSize: 18,
+    color: '#ffffff',
+    fontWeight: 'bold',
   },
 });
 
