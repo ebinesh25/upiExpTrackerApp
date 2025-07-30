@@ -49,8 +49,22 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
 
+    <!-- for QR SCANNER -->
 	<key>NSCameraUsageDescription</key>
 	<string>upiExpTrackApp needs access to your Camera.</string>
+
+    <!-- for Check Payment Success -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>yourapp</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>yourapp</string>
+            </array>
+        </dict>
+    </array>
 
 </dict>
 </plist>

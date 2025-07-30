@@ -40,7 +40,8 @@ interface Transaction {
   payeeName: string;
   amount: string;
   description: string;
-  status: 'initiated' | 'completed' | 'failed';
+  status: 'initiated' | 'completed' | 'failed' | 'binned';
+  binnedDate?: string; // Date when moved to bin
 }
 
 // Storage functions
@@ -76,6 +77,31 @@ const getTransactions = async (): Promise<Transaction[]> => {
   }
 };
 
+const updateTransactionStatus = async (id: string, status: 'initiated' | 'completed' | 'failed' | 'binned') => {
+  try {
+    const transactions = await getTransactions();
+    const updated = transactions.map(t => {
+      if (t.id === id) {
+        if (status === 'failed') {
+          // Move failed transactions to bin automatically
+          return { 
+            ...t, 
+            status: 'binned' as const, 
+            binnedDate: new Date().toISOString() 
+          };
+        }
+        return { ...t, status };
+      }
+      return t;
+    });
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    return true;
+  } catch (error) {
+    console.error('Error updating transaction status:', error);
+    return false;
+  }
+};
+
 const deleteTransaction = async (id: string) => {
   try {
     const transactions = await getTransactions();
@@ -94,6 +120,57 @@ const clearAllTransactions = async () => {
     return true;
   } catch (error) {
     console.error('Error clearing transactions:', error);
+    return false;
+  }
+};
+
+// Clean up binned transactions older than 30 days
+const cleanupOldBinnedTransactions = async () => {
+  try {
+    const transactions = await getTransactions();
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const filtered = transactions.filter(t => {
+      if (t.status === 'binned' && t.binnedDate) {
+        const binnedDate = new Date(t.binnedDate);
+        return binnedDate > thirtyDaysAgo;
+      }
+      return true;
+    });
+    
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    return transactions.length - filtered.length; // Return number of deleted items
+  } catch (error) {
+    console.error('Error cleaning up old binned transactions:', error);
+    return 0;
+  }
+};
+
+// Restore transaction from bin
+const restoreFromBin = async (id: string) => {
+  try {
+    const transactions = await getTransactions();
+    const updated = transactions.map(t => 
+      t.id === id ? { ...t, status: 'initiated' as const, binnedDate: undefined } : t
+    );
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    return true;
+  } catch (error) {
+    console.error('Error restoring transaction from bin:', error);
+    return false;
+  }
+};
+
+// Permanently delete binned transaction
+const permanentlyDelete = async (id: string) => {
+  try {
+    const transactions = await getTransactions();
+    const filtered = transactions.filter(t => t.id !== id);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    return true;
+  } catch (error) {
+    console.error('Error permanently deleting transaction:', error);
     return false;
   }
 };
@@ -339,9 +416,12 @@ const ScanScreen = ({ navigation }: any) => {
 const TransactionsScreen = () => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'pending' | 'approved' | 'bin'>('pending');
 
   useEffect(() => {
     loadTransactions();
+    // Clean up old binned transactions on component mount
+    cleanupOldBinnedTransactions();
   }, []);
 
   const loadTransactions = async () => {
@@ -349,6 +429,51 @@ const TransactionsScreen = () => {
     const data = await getTransactions();
     setTransactions(data);
     setLoading(false);
+  };
+
+  const handleStatusChange = async (id: string, newStatus: 'completed' | 'failed') => {
+    const success = await updateTransactionStatus(id, newStatus);
+    if (success) {
+      loadTransactions();
+      if (newStatus === 'failed') {
+        Alert.alert('Transaction Failed', 'Transaction has been moved to bin and will be automatically deleted after 30 days.');
+      } else {
+        Alert.alert('Success', `Transaction marked as ${newStatus}`);
+      }
+    } else {
+      Alert.alert('Error', 'Failed to update transaction status');
+    }
+  };
+
+  const handleRestore = async (id: string) => {
+    const success = await restoreFromBin(id);
+    if (success) {
+      loadTransactions();
+      Alert.alert('Success', 'Transaction restored from bin');
+    } else {
+      Alert.alert('Error', 'Failed to restore transaction');
+    }
+  };
+
+  const handlePermanentDelete = async (id: string) => {
+    Alert.alert(
+      'Permanent Delete',
+      'Are you sure you want to permanently delete this transaction? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Forever',
+          style: 'destructive',
+          onPress: async () => {
+            const success = await permanentlyDelete(id);
+            if (success) {
+              loadTransactions();
+              Alert.alert('Success', 'Transaction permanently deleted');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDelete = async (id: string) => {
@@ -391,10 +516,30 @@ const TransactionsScreen = () => {
     );
   };
 
+  const handleCleanupOldBinned = async () => {
+    Alert.alert(
+      'Cleanup Old Binned Items',
+      'This will permanently delete all binned transactions older than 30 days. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Cleanup',
+          style: 'destructive',
+          onPress: async () => {
+            const deletedCount = await cleanupOldBinnedTransactions();
+            loadTransactions();
+            Alert.alert('Cleanup Complete', `${deletedCount} old transactions were permanently deleted.`);
+          },
+        },
+      ]
+    );
+  };
+
   const exportToCSV = async () => {
     try {
-      if (transactions.length === 0) {
-        Alert.alert('No Data', 'No transactions to export.');
+      const filteredTransactions = getFilteredTransactions();
+      if (filteredTransactions.length === 0) {
+        Alert.alert('No Data', `No ${activeTab} transactions to export.`);
         return;
       }
 
@@ -402,7 +547,7 @@ const TransactionsScreen = () => {
       const headers = ['Date', 'Time', 'UPI ID', 'Payee Name', 'Amount (INR)', 'Description', 'Status'];
       const csvContent = [
         headers.join(','),
-        ...transactions.map(t =>
+        ...filteredTransactions.map(t =>
           [
             t.date,
             t.time,
@@ -416,14 +561,14 @@ const TransactionsScreen = () => {
       ].join('\n');
 
       // Save to file
-      const path = `${RNFS.DocumentDirectoryPath}/upi_transactions_${Date.now()}.csv`;
+      const path = `${RNFS.DocumentDirectoryPath}/upi_${activeTab}_transactions_${Date.now()}.csv`;
       await RNFS.writeFile(path, csvContent, 'utf8');
 
       // Share the file
       await Share.open({
         url: `file://${path}`,
         type: 'text/csv',
-        title: 'UPI Transactions',
+        title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
       });
     } catch (error) {
       console.error('Export error:', error);
@@ -433,19 +578,20 @@ const TransactionsScreen = () => {
 
   const exportToJSON = async () => {
     try {
-      if (transactions.length === 0) {
-        Alert.alert('No Data', 'No transactions to export.');
+      const filteredTransactions = getFilteredTransactions();
+      if (filteredTransactions.length === 0) {
+        Alert.alert('No Data', `No ${activeTab} transactions to export.`);
         return;
       }
 
-      const jsonContent = JSON.stringify(transactions, null, 2);
-      const path = `${RNFS.DocumentDirectoryPath}/upi_transactions_${Date.now()}.json`;
+      const jsonContent = JSON.stringify(filteredTransactions, null, 2);
+      const path = `${RNFS.DocumentDirectoryPath}/upi_${activeTab}_transactions_${Date.now()}.json`;
       await RNFS.writeFile(path, jsonContent, 'utf8');
 
       await Share.open({
         url: `file://${path}`,
         type: 'application/json',
-        title: 'UPI Transactions',
+        title: `UPI ${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} Transactions`,
       });
     } catch (error) {
       console.error('Export error:', error);
@@ -453,9 +599,47 @@ const TransactionsScreen = () => {
     }
   };
 
+  const getFilteredTransactions = () => {
+    return transactions.filter(transaction => {
+      if (activeTab === 'pending') {
+        return transaction.status === 'initiated';
+      } else if (activeTab === 'approved') {
+        return transaction.status === 'completed';
+      } else if (activeTab === 'bin') {
+        return transaction.status === 'binned';
+      }
+      return false;
+    });
+  };
+
   const renderTransaction = ({ item }: { item: Transaction }) => {
     const getStatusColor = (status: string) => {
-      return status === 'initiated' ? '#ff9500' : '#34c759';
+      switch (status) {
+        case 'initiated': return '#ff9500';
+        case 'completed': return '#34c759';
+        case 'failed': return '#ff3b30';
+        case 'binned': return '#8e8e93';
+        default: return '#ff9500';
+      }
+    };
+
+    const getStatusText = (status: string) => {
+      switch (status) {
+        case 'initiated': return 'PENDING';
+        case 'completed': return 'COMPLETED';
+        case 'failed': return 'FAILED';
+        case 'binned': return 'BINNED';
+        default: return 'PENDING';
+      }
+    };
+
+    const getDaysUntilDeletion = (binnedDate?: string) => {
+      if (!binnedDate) return null;
+      const binned = new Date(binnedDate);
+      const now = new Date();
+      const diffTime = 30 * 24 * 60 * 60 * 1000 - (now.getTime() - binned.getTime()); // 30 days in milliseconds
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      return Math.max(0, diffDays);
     };
 
     return (
@@ -472,9 +656,52 @@ const TransactionsScreen = () => {
           <Text style={styles.transactionAmount}>Amount: ₹{item.amount}</Text>
           {item.description ? <Text style={styles.transactionDesc}>Desc: {item.description}</Text> : null}
           <Text style={[styles.transactionStatus, { color: getStatusColor(item.status) }]}>
-            Status: {item.status.toUpperCase()}
+            Status: {getStatusText(item.status)}
           </Text>
+          
+          {/* Show days until permanent deletion for binned items */}
+          {item.status === 'binned' && item.binnedDate && (
+            <Text style={styles.binWarning}>
+              Auto-delete in {getDaysUntilDeletion(item.binnedDate)} days
+            </Text>
+          )}
         </View>
+        
+        {/* Status change buttons for pending transactions */}
+        {item.status === 'initiated' && (
+          <View style={styles.statusButtonRow}>
+            <TouchableOpacity 
+              style={styles.statusButton}
+              onPress={() => handleStatusChange(item.id, 'completed')}
+            >
+              <Text style={styles.statusButtonText}>Mark Completed</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.statusButton, styles.failedButton]}
+              onPress={() => handleStatusChange(item.id, 'failed')}
+            >
+              <Text style={styles.statusButtonText}>Mark Failed</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+        
+        {/* Restore and permanent delete buttons for binned transactions */}
+        {item.status === 'binned' && (
+          <View style={styles.statusButtonRow}>
+            <TouchableOpacity 
+              style={styles.statusButton}
+              onPress={() => handleRestore(item.id)}
+            >
+              <Text style={styles.statusButtonText}>Restore</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.statusButton, styles.failedButton]}
+              onPress={() => handlePermanentDelete(item.id)}
+            >
+              <Text style={styles.statusButtonText}>Delete Forever</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     );
   };
@@ -487,9 +714,39 @@ const TransactionsScreen = () => {
     );
   }
 
+  const filteredTransactions = getFilteredTransactions();
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Transaction History</Text>
+      
+      {/* Tab Buttons */}
+      <View style={styles.tabContainer}>
+        <TouchableOpacity 
+          style={[styles.tabButton, activeTab === 'pending' && styles.activeTabButton]}
+          onPress={() => setActiveTab('pending')}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'pending' && styles.activeTabButtonText]}>
+            Pending ({transactions.filter(t => t.status === 'initiated').length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={[styles.tabButton, activeTab === 'approved' && styles.activeTabButton]}
+          onPress={() => setActiveTab('approved')}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'approved' && styles.activeTabButtonText]}>
+            Approved ({transactions.filter(t => t.status === 'completed').length})
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={[styles.tabButton, activeTab === 'bin' && styles.activeTabButton]}
+          onPress={() => setActiveTab('bin')}
+        >
+          <Text style={[styles.tabButtonText, activeTab === 'bin' && styles.activeTabButtonText]}>
+            Bin ({transactions.filter(t => t.status === 'binned').length})
+          </Text>
+        </TouchableOpacity>
+      </View>
       
       <View style={styles.buttonRow}>
         <TouchableOpacity style={styles.exportButton} onPress={exportToCSV}>
@@ -504,16 +761,22 @@ const TransactionsScreen = () => {
         <TouchableOpacity style={styles.refreshButton} onPress={loadTransactions}>
           <Text style={styles.refreshButtonText}>Refresh</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.clearButton} onPress={handleClearAll}>
-          <Text style={styles.clearButtonText}>Clear All</Text>
-        </TouchableOpacity>
+        {activeTab === 'bin' ? (
+          <TouchableOpacity style={styles.clearButton} onPress={handleCleanupOldBinned}>
+            <Text style={styles.clearButtonText}>Cleanup Old</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.clearButton} onPress={handleClearAll}>
+            <Text style={styles.clearButtonText}>Clear All</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {transactions.length === 0 ? (
-        <Text style={styles.emptyText}>No transactions found</Text>
+      {filteredTransactions.length === 0 ? (
+        <Text style={styles.emptyText}>No {activeTab} transactions found</Text>
       ) : (
         <FlatList
-          data={transactions}
+          data={filteredTransactions}
           renderItem={renderTransaction}
           keyExtractor={(item) => item.id}
           style={styles.transactionsList}
@@ -525,6 +788,18 @@ const TransactionsScreen = () => {
 };
 
 const App = () => {
+  useEffect(() => {
+    // Clean up old binned transactions when app starts
+    const initializeApp = async () => {
+      const deletedCount = await cleanupOldBinnedTransactions();
+      if (deletedCount > 0) {
+        console.log(`Cleaned up ${deletedCount} old binned transactions`);
+      }
+    };
+    
+    initializeApp();
+  }, []);
+
   return (
     <NavigationContainer>
       <Tab.Navigator
@@ -811,6 +1086,62 @@ const styles = StyleSheet.create({
     color: '#cccccc',
     textAlign: 'center',
     marginTop: 50,
+  },
+  // Tab styles
+  tabContainer: {
+    flexDirection: 'row',
+    marginBottom: 20,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 4,
+    width: '90%',
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  activeTabButton: {
+    backgroundColor: '#007AFF',
+  },
+  tabButtonText: {
+    fontSize: 14,
+    color: '#cccccc',
+    fontWeight: '600',
+  },
+  activeTabButtonText: {
+    color: '#ffffff',
+  },
+  // Status button styles
+  statusButtonRow: {
+    flexDirection: 'row',
+    marginTop: 10,
+    gap: 10,
+  },
+  statusButton: {
+    flex: 1,
+    backgroundColor: '#34C759',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  failedButton: {
+    backgroundColor: '#FF3B30',
+  },
+  statusButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  // Bin warning style
+  binWarning: {
+    fontSize: 11,
+    color: '#ff9500',
+    fontWeight: '500',
+    fontStyle: 'italic',
   },
 });
 
